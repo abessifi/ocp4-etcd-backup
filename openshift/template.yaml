@@ -1,0 +1,179 @@
+kind: Template
+apiVersion: template.openshift.io/v1
+metadata:
+  name: etcd-backup
+  annotations:
+    openshift.io/display-name: "ETCD Backup"
+    description: >-
+      An OpenShift ETCD Backup Tool. For more information
+      about using this template, including OpenShift considerations, see
+      https://github.com/abessifi/ocp4-etcd-backup/blob/main/README.md
+    openshift.io/long-description: >-
+      This template defines resources required to deploy and run the OCP ETCD Backup Tool.
+    tags: "ocp,etcd,backup,cronjob"
+    iconClass: icon-sso
+    openshift.io/provider-display-name: "Ahmed Bessifi, Red Hat, Inc."
+    openshift.io/documentation-url: "https://github.com/abessifi/ocp4-etcd-backup.git"
+objects:
+- kind: ImageStream
+  apiVersion: image.openshift.io/v1
+  metadata:
+    name: etcd-backup
+    namespace: ${OCP_ETCD_BACKUP_NAMESPACE}
+    labels:
+      app: etcd-backup
+  spec:
+    lookupPolicy:
+      local: false
+
+- kind: BuildConfig
+  apiVersion: build.openshift.io/v1
+  metadata:
+    name: etcd-backup
+    namespace: ${OCP_ETCD_BACKUP_NAMESPACE}
+    labels:
+      app: etcd-backup
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: 'etcd-backup:latest'
+    successfulBuildsHistoryLimit: 5
+    failedBuildsHistoryLimit: 5
+    strategy:
+      type: Docker
+    source:
+      type: Git
+      git:
+        uri: "${OCP_ETCD_BACKUP_GIT_REPO}"
+        ref: ${OCP_ETCD_BACKUP_GIT_BRANCH}
+    triggers:
+      - type: ConfigChange
+
+- kind: Secret
+  apiVersion: v1
+  metadata:
+    name: minio-client-config
+    namespace: ${OCP_ETCD_BACKUP_NAMESPACE}
+  type: Opaque
+  stringData:
+    config.json: |
+      {
+        "version": "10",
+        "aliases": {
+          "s3-repo": {
+            "url": "${OCP_ETCD_BACKUP_S3_ENDPOINT}",
+            "accessKey": "${OCP_ETCD_BACKUP_S3_ACCESS_KEY}",
+            "secretKey": "${OCP_ETCD_BACKUP_S3_SECRET_KEY}",
+            "api": "s3v4",
+            "path": "auto"
+          }
+        }
+      }
+
+- apiVersion: batch/v1beta1
+  kind: CronJob
+  metadata:
+    name: etcd-backup
+    namespace: ${OCP_ETCD_BACKUP_NAMESPACE}
+    labels:
+      app: etcd-backup
+  spec:
+    schedule: "${OCP_ETCD_BACKUP_CRONJOB_SCHEDULE}"
+    restartPolicy: Never
+    concurrencyPolicy: "Forbid"
+    successfulJobsHistoryLimit: 5
+    failedJobsHistoryLimit: 5
+    jobTemplate:
+      spec:
+        template:
+          metadata:
+            labels:
+              app: etcd-backup
+          spec:
+            hostPID: true
+            hostNetwork: true
+            enableServiceLinks: true
+            restartPolicy: Never
+            containers:
+              - name: backup
+                image: image-registry.openshift-image-registry.svc:5000/default/etcd-backup:latest
+                args:
+                  - /bin/bash
+                  - 'entrypoint.sh'
+                env:
+                  - name: S3_BUCKET_NAME
+                    value: "${OCP_ETCD_BACKUP_S3_BUCKET}"
+                securityContext:
+                  privileged: true
+                  runAsUser: 0
+                imagePullPolicy: Always
+                volumeMounts:
+                  - name: host
+                    mountPath: /host
+                  - name: mc-config
+                    mountPath: /etc/mc/
+                    readOnly: true
+            volumes:
+              - name: host
+                hostPath:
+                  path: /
+                  type: Directory
+              - name: mc-config
+                secret:
+                  secretName: minio-client-config
+            nodeSelector:
+              node-role.kubernetes.io/master: ""
+            tolerations:
+              - key: node-role.kubernetes.io/master
+                operator: Exists
+                effect: NoSchedule
+              - key: node.kubernetes.io/not-ready
+                operator: Exists
+                effect: NoExecute
+                tolerationSeconds: 300
+              - key: node.kubernetes.io/unreachable
+                operator: Exists
+                effect: NoExecute
+                tolerationSeconds: 300
+              - key: node.kubernetes.io/memory-pressure
+                operator: Exists
+                effect: NoSchedule
+
+parameters:
+  - name: OCP_ETCD_BACKUP_NAMESPACE
+    displayName: OCP Namespace
+    description: The OpenShift namespace where the manifests will be created
+    value: openshift-etcd-backup
+    required: true
+  - name: OCP_ETCD_BACKUP_GIT_REPO
+    displayName: Git repository name
+    description: The project's git repository name
+    value: https://github.com/abessifi/ocp4-etcd-backup.git
+    required: true
+  - name: OCP_ETCD_BACKUP_GIT_BRANCH
+    displayName: Git branch name
+    description: The project's git branch name
+    value: main
+    required: true
+  - name: OCP_ETCD_BACKUP_S3_ENDPOINT
+    displayName: S3 Endpoint
+    description: The S3 repository url. It should start with 'https'. Example: 'https://foo.bar.baz'
+    required: true
+  - name: OCP_ETCD_BACKUP_S3_ACCESS_KEY
+    displayName: S3 Access Key
+    description: The Access key to access the S3 bucket
+    required: true
+  - name: OCP_ETCD_BACKUP_S3_SECRET_KEY
+    displayName: S3 Secret Key
+    description: The Secret key to access the S3 bucket
+    required: true
+  - name: OCP_ETCD_BACKUP_S3_BUCKET
+    displayName: S3 Bucket Name
+    description: The bucket name where etcd buckups will be stored
+    required: true
+  - name: OCP_ETCD_BACKUP_CRONJOB_SCHEDULE
+    displayName: Job Schedule Frequency
+    description: Schedule for the job specified in cron format. Default, the job will run once a day at midnight.
+    value: @daily
+    required: true
