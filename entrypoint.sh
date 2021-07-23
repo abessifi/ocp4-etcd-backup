@@ -25,8 +25,6 @@ for file_name in `ls /host/home/core/assets/backup`; do
   mc --config-dir /root/.mc/ --quiet cp --md5 /host/home/core/assets/backup/$file_name s3-repo/$S3_BUCKET_NAME/
 done
 
-sleep 3600
-
 # cleanup the local backup dir if upload is ok
 if [ $? == 0 ]; then
   echo "[INFO] Etcd backup finished !"
