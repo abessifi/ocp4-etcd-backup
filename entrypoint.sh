@@ -22,7 +22,7 @@ echo "[INFO] Etcd backup files generated !"
 # TODO: Detect upload errors and "exit 1"
 echo "[INFO] Copy backup files to S3.."
 for file_name in `ls /host/home/core/assets/backup`; do
-  mc cp --quiet --md5 /host/home/core/assets/backup/$file_name s3-repo/$S3_BUCKET_NAME/
+  mc --config-dir /root/.mc/ --quiet cp --md5 /host/home/core/assets/backup/$file_name s3-repo/$S3_BUCKET_NAME/
 done
 
 # cleanup the local backup dir if upload is ok
