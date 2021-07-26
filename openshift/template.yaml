@@ -97,7 +97,7 @@ objects:
             restartPolicy: Never
             containers:
               - name: backup
-                image: image-registry.openshift-image-registry.svc:5000/default/etcd-backup:latest
+                image: image-registry.openshift-image-registry.svc:5000/${OCP_ETCD_BACKUP_NAMESPACE}/etcd-backup:latest
                 args:
                   - /bin/bash
                   - 'entrypoint.sh'
@@ -158,7 +158,7 @@ parameters:
     required: true
   - name: OCP_ETCD_BACKUP_S3_ENDPOINT
     displayName: S3 Endpoint
-    description: The S3 repository url. It should start with 'https'. Example: 'https://foo.bar.baz'
+    description: The S3 repository url. It should start with https
     required: true
   - name: OCP_ETCD_BACKUP_S3_ACCESS_KEY
     displayName: S3 Access Key
@@ -175,5 +175,5 @@ parameters:
   - name: OCP_ETCD_BACKUP_CRONJOB_SCHEDULE
     displayName: Job Schedule Frequency
     description: Schedule for the job specified in cron format. Default, the job will run once a day at midnight.
-    value: @daily
+    value: "@daily"
     required: true

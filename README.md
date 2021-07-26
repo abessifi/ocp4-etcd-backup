@@ -1,6 +1,6 @@
 ## OpenShift ETCD Backup
 
-This project is a set of scripts to automate [etcd backup](https://docs.openshift.com/container-platform/4.7/backup_and_restore/backing-up-etcd.html) and run it through the native `Kubernetes Cronjob` resource.
+This project is a set of scripts to automate [etcd backup](https://docs.openshift.com/container-platform/4.7/backup_and_restore/backing-up-etcd.html) and run it through the native `Kubernetes Cronjob` resource. The generated backup files are transfered to an S3 bucket via [MinIO Client](https://docs.min.io/docs/minio-client-complete-guide.html).
 
 The procedure to backup OpenShift ETCD is described here. Official guidelines from Red Hat are followed when possible. If there is any deviation, it will be detailed in this document.
 
@@ -17,220 +17,106 @@ At the time of writing with latest OCP version `4.7`, the default and recommende
 
 ## Installation
 
-To install this utility on OpenShift, you just need to leverage [this template](openshift/template.yaml). The template parameters are:
+To install this utility on OpenShift, you just need to leverage [this template](openshift/template.yaml).
+The template parameters are:
 
-- **OCP_INSTALLER_SECRET_NAME**: The secret name that holds the SA key to be rotated (default: `gcp-credentials`)
-- **OCP_INSTALLER_SECRET_NAMESPACE**: The OpenShift namespace name where the secret is (default: `kube-system`)
-- **GCP_SERVICEACCOUNT_KEY_EXPIRATION_PERIOD**: The renewal period of the GCP Key (default: `90` days)
-- **LOGGING_LEVEL**: The keyrotator log level (default: `INFO`)
+- **OCP_ETCD_BACKUP_NAMESPACE**: The OpenShift namespace where the manifests will be created (default: `openshift-etcd-backup`)
+- **OCP_ETCD_BACKUP_GIT_REPO**: The project's git repository name (default: `https://github.com/abessifi/ocp4-etcd-backup.git`)
+- **OCP_ETCD_BACKUP_GIT_BRANCH**: The project's git branch name (default: `main`)
+- **OCP_ETCD_BACKUP_S3_ENDPOINT**: The S3 repository url. It should start with `https`. Example: `https://foo.bar.baz`
+- **OCP_ETCD_BACKUP_S3_BUCKET**: The bucket name where etcd buckups will be stored
+- **OCP_ETCD_BACKUP_S3_ACCESS_KEY**: The Access key to access the S3 bucket
+- **OCP_ETCD_BACKUP_S3_SECRET_KEY**: The Secret key to access the S3 bucket
+- **OCP_ETCD_BACKUP_CRONJOB_SCHEDULE**: Schedule for the job specified in cron format (default: `@daily`). Default, the job will run once a day at midnight.
 
 Once deployed, the template creates the following resources:
 
-- A `BuildConfig` to build the `keyrotator` container image using a `Python` base image
+- A `BuildConfig` to build the `etcd-backup` container image
 - An `ImageStream` to store the built image
-- A `Service Account` with a custom `Role` and `RoleBinding`
-- A `CronJob` to schedule the keyrotator execution in a `daily` basis.
+- A `CronJob` to schedule the `etcd-backup` execution in a daily basis by default.
 
-1. Clone the `scale-gcp-keyrotator` repo:
+1. Clone the `ocp4-etcd-backup` repo:
 
 ```
-$ git clone ssh://git@emea-aws-gitlab.sanofi.com:2222/scale/team/scale-gcp-keyrotator.git
-
-or
-
-$ git clone https://<gitlab-username>:<gitlab-access-token>@emea-aws-gitlab.sanofi.com:3001/scale/team/scale-gcp-keyrotator.git
+$ git clone https://github.com/abessifi/ocp4-etcd-backup
 ```
 
-2. Login to OCP and switch to the `kube-system` namespace:
+2. Login to OCP and create the `etcd-backup` namespace:
 
 ```
 $ oc login
-$ oc project kube-system
+$ oc new-project etcd-backup
 ```
 
-3. Create the `gitlab-credentials` secret with credentials for checking out the project from gitlab
+3. Add the `privileged` SCC to the `default` service account:
 
 ```
-$ oc create secret generic gitlab-credentials \
-    --from-literal=username=<gitlab-username> \
-    --from-literal=password=<gitlab-access-token> \
-    --type=kubernetes.io/basic-auth
+$ oc adm policy add-scc-to-user privileged -z default -n etcd-backup
 ```
 
-4. Build and deploy keyrotator:
+4. Build and deploy the etcd-backup utility:
 
 ```bash
-$ cd scale-gcp-keyrotator/openshift/
+$ cd ocp4-etcd-backup/openshift/
 
-# Build with default configuration
-$ oc process -f template.yaml | oc create -f -
+$ oc process -f template.yaml \
+             -p OCP_ETCD_BACKUP_NAMESPACE=etcd-backup \
+             -p OCP_ETCD_BACKUP_GIT_REPO=https://github.com/abessifi/ocp4-etcd-backup.git \
+             -p OCP_ETCD_BACKUP_GIT_BRANCH=main \
+             -p OCP_ETCD_BACKUP_S3_ENDPOINT=https://foo.bar.baz \
+             -p OCP_ETCD_BACKUP_S3_ACCESS_KEY="XXXXXXXXXXXXXX" \
+             -p OCP_ETCD_BACKUP_S3_SECRET_KEY="XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX" \
+             -p OCP_ETCD_BACKUP_S3_BUCKET=foobar \
+             -p OCP_ETCD_BACKUP_CRONJOB_SCHEDULE="@daily" | oc create -f -
 
-serviceaccount/keyrotator created
-role.rbac.authorization.k8s.io/gcp-credentials-secret-handler created
-rolebinding.rbac.authorization.k8s.io/gcp-credentials-handler created
-imagestream.image.openshift.io/keyrotator created
-buildconfig.build.openshift.io/keyrotator created
-cronjob.batch/keyrotator created
-
-# Or build with custom configuration like running the app in debug mode and setting the
-# key renewal period to '60 days' instead of the default value which is '90 days'
-$ oc process -f template.yaml -p LOGGING_LEVEL=DEBUG -p GCP_SERVICEACCOUNT_KEY_EXPIRATION_PERIOD=60
+imagestream.image.openshift.io/etcd-backup created
+buildconfig.build.openshift.io/etcd-backup created
+secret/minio-client-config created
+cronjob.batch/etcd-backup created
 ```
 
 5. Check the deployed resources:
 
 ```
 $ oc get buildconfig,is,cronjob
-NAME                                        TYPE     FROM   LATEST
-buildconfig.build.openshift.io/keyrotator   Docker   Git    1
+NAME                                         TYPE     FROM          LATEST
+buildconfig.build.openshift.io/etcd-backup   Docker   Git@develop   1
 
-NAME                                        IMAGE REPOSITORY                                                                                                      TAGS     UPDATED
-imagestream.image.openshift.io/keyrotator   default-route-openshift-image-registry.apps.scale-bbd75801.p673311018045.gcp-emea.sanofi.com/kube-system/keyrotator   latest   About an hour ago
+NAME                                         IMAGE REPOSITORY                                                           TAGS     UPDATED
+imagestream.image.openshift.io/etcd-backup   image-registry.openshift-image-registry.svc:5000/etcd-backup/etcd-backup   latest   About a minute ago
 
-NAME                       SCHEDULE   SUSPEND   ACTIVE   LAST SCHEDULE   AGE
-cronjob.batch/keyrotator   @daily     False     0        <none>          90m
+NAME                        SCHEDULE       SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+cronjob.batch/etcd-backup   */15 * * * *   False     0        <none>          3m25s
 ```
 
-**PS:** The keyrotator job won't be scheduled automatically just after the cronjob creation but should be executed after some time when the `daily` time constraint is reached.
+**PS:** The etcd-backup job won't be scheduled automatically just after the cronjob creation but should be executed after some time when the schedule time constraint is reached.
 
-### Usage
+## Usage
 
-The cronjob will schedule keyrotator execution in a daily basis, so nothing to do manually.
-For troubleshooting purposes you can check the `keyrotator` execution as follow:
+The cronjob will schedule etcd-backup execution in a regular basis, so nothing to do manually.
+For troubleshooting purposes you can check the `etcd-backup` job execution as follow:
 
 1. Grep the last job's name:
 
 ```
-$ oc project kube-system
+$ oc project etcd-backup
 $ oc get jobs
 
 NAME           COMPLETIONS   DURATION   AGE
-keyrotator-xxxx   1/1           17s        37m
+etcd-backup-xxxx   1/1           17s        37m
 ```
 
 2. Check the logs:
 
 ```
-$ oc logs job/keyrotator-xxxx
+$ oc logs job/etcd-backup-xxxx
 ```
 
-### Cleanup
+## Cleanup
 
-1. Delete the resources that have been created by the OpenShift template:
-
-```
-$ oc project kube-system
-$ cd scale-gcp-keyrotator/openshift/
-$ oc process -f template.yaml | oc delete -f -
-```
-
-2. Delete the `gitlab-credentials` secret:
+Delete the resources that have been created by the OpenShift template:
 
 ```
-$ oc delete secret gitlab-credentials
-```
-
-## Other Service Accounts Keys Rotation
-
-The OCP platform Operators also leverages IAM Service Accounts in order to interact with specific GCP APIs. The Service Accounts Keys should also be rotated in a regular basis to enforce cluster security and be compliant we the security policy.
-
-When you get a request/notification from the CloudOps team, you can follow the following steps in order to rotate those keys.
-
-1. Make sure the `Installer Service Account` has already the roles `Service Account Admin` and `Service Account Key Admin`.
-You can check this using the `gcloud` CLI or via the `GCP Web Console` on the `IAM` section.
-
-```
-$ gcloud projects get-iam-policy <YOUR GCLOUD PROJECT>  \
---flatten="bindings[].members" \
---format='table(bindings.role)' \
---filter="bindings.members:<YOUR SERVICE ACCOUNT>"
-
-ROLE
-roles/compute.admin
-roles/dns.admin
-roles/iam.securityAdmin
-roles/iam.serviceAccountAdmin
-roles/iam.serviceAccountKeyAdmin
-roles/iam.serviceAccountUser
-roles/storage.admin
-```
-
-2. List the active `CredentialRequests` resources:
-
-```
-for cr in $(oc -n openshift-cloud-credential-operator get credentialsrequest --no-headers -o name); do
-  sa=$(oc -n openshift-cloud-credential-operator get $cr -o jsonpath='{.status.providerStatus.serviceAccountID}');
-  if [ ! -z "$sa" ]; then
-    awk -F'/' '{ print $2 }' <<< $cr;
-  fi
-done
-```
-
-Basically you should get the following output:
-
-```
-openshift-image-registry-gcs
-openshift-ingress-gcp
-openshift-machine-api-gcp
-```
-
-3. Delete the `CredentialRequests` one by one and check the status of the new created ones:
-
-```bash
-# Delete the 'openshift-image-registry-gcs' resource
-$ oc -n openshift-cloud-credential-operator delete credentialsrequest openshift-image-registry-gcs
-# Wait a couple of minutes and check the status. It should be 'true'.
-$ oc -n openshift-cloud-credential-operator get credentialsrequest openshift-image-registry-gcs -o jsonpath='{.status.provisioned}{"\n"}'
-# Restart registry pods
-$ for pd in $(oc get pods -n openshift-image-registry -l docker-registry=default --no-headers -o name); do oc -n openshift-image-registry delete $pd; sleep 5; done
-
-# Delete the 'openshift-ingress-gcp' resource
-$ oc -n openshift-cloud-credential-operator delete credentialsrequest openshift-ingress-gcp
-# Wait a couple of minutes and check the status. It should be 'true'.
-$ oc -n openshift-cloud-credential-operator get credentialsrequest openshift-ingress-gcp -o jsonpath='{.status.provisioned}{"\n"}'
-# Restart the Ingress Operator
-$ oc -n openshift-ingress-operator delete pod -l name=ingress-operator
-
-# Delete the 'openshift-machine-api-gcp' resource
-$ oc -n openshift-cloud-credential-operator delete credentialsrequest openshift-machine-api-gcp
-# Wait a couple of minutes and check the status. It should be 'true'.
-$ oc -n openshift-cloud-credential-operator get credentialsrequest openshift-machine-api-gcp -o jsonpath='{.status.provisioned}{"\n"}'
-```
-
-4. Check the status of all `Cluster Operators` and make sure none of them is degraded:
-
-```
-$ oc get clusteroperators
-
-NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE
-authentication                             4.6.8     True        False         False      11h
-cloud-credential                           4.6.8     True        False         False      141d
-cluster-autoscaler                         4.6.8     True        False         False      141d
-config-operator                            4.6.8     True        False         False      35d
-console                                    4.6.8     True        False         False      3h25m
-csi-snapshot-controller                    4.6.8     True        False         False      20d
-dns                                        4.6.8     True        False         False      35d
-etcd                                       4.6.8     True        False         False      141d
-image-registry                             4.6.8     True        False         False      5h34m
-ingress                                    4.6.8     True        False         False      35d
-insights                                   4.6.8     True        False         False      141d
-kube-apiserver                             4.6.8     True        False         False      141d
-kube-controller-manager                    4.6.8     True        False         False      141d
-kube-scheduler                             4.6.8     True        False         False      141d
-kube-storage-version-migrator              4.6.8     True        False         False      20d
-machine-api                                4.6.8     True        False         False      141d
-machine-approver                           4.6.8     True        False         False      35d
-machine-config                             4.6.8     True        False         False      20d
-marketplace                                4.6.8     True        False         False      20d
-monitoring                                 4.6.8     True        False         False      20d
-network                                    4.6.8     True        False         False      141d
-node-tuning                                4.6.8     True        False         False      35d
-openshift-apiserver                        4.6.8     True        False         False      20d
-openshift-controller-manager               4.6.8     True        False         False      35d
-openshift-samples                          4.6.8     True        False         False      35d
-operator-lifecycle-manager                 4.6.8     True        False         False      141d
-operator-lifecycle-manager-catalog         4.6.8     True        False         False      141d
-operator-lifecycle-manager-packageserver   4.6.8     True        False         False      20d
-service-ca                                 4.6.8     True        False         False      141d
-storage                                    4.6.8     True        False         False      35d
+$ oc adm policy remove-scc-from-user privileged -z default -n etcd-backup
+$ oc delete project etcd-backup
 ```
